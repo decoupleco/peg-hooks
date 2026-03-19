@@ -8,13 +8,17 @@ import {PoolId, PoolIdLibrary} from "v4-core/src/types/PoolId.sol";
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/src/types/BeforeSwapDelta.sol";
 import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
 import {IPoolManager} from "v4-core/src/interfaces/IPoolManager.sol";
-import {SwapParams} from "v4-core/src/types/PoolOperation.sol";
+import {SwapParams, ModifyLiquidityParams} from "v4-core/src/types/PoolOperation.sol";
 import {LPFeeLibrary} from "v4-core/src/libraries/LPFeeLibrary.sol";
 import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
 import {Currency} from "v4-core/src/types/Currency.sol";
 
 import {IPegCore} from "./interfaces/IPegCore.sol";
 import {PegMath} from "./libraries/PegMath.sol";
+
+interface IPegAsset {
+    function currency() external view returns (bytes32);
+}
 
 /// @title PegHook — Dynamic-fee UniV4 hook for peg-anchored channel pools
 ///
@@ -54,6 +58,9 @@ contract PegHook is BaseHook {
     /// @dev Reference volume for VW-EMA smoothing (WAD-scaled).
     ///      Higher V₀ ⇒ slower EMA ⇒ harder to manipulate.
     uint256 public constant V0 = 1000e18;
+
+    /// @dev 0.5% around peg is ~49.9 ticks at 1bp tick granularity.
+    int24 internal constant MAX_PEG_DEVIATION_TICK = 50;
 
     // ═══════════════════════════════════════════════════════════════════════
     //  Immutables
@@ -103,17 +110,15 @@ contract PegHook is BaseHook {
     error ChannelNotRegistered();
     error ChannelAlreadyRegistered();
     error NotDynamicFee();
+    error InvalidLiquidityRange();
 
     // ═══════════════════════════════════════════════════════════════════════
     //  Constructor
     // ═══════════════════════════════════════════════════════════════════════
 
-    constructor(
-        IPoolManager _poolManager,
-        IPegCore _core,
-        bytes32 _pegAssetInitCodeHash,
-        uint256 _usdMarketId
-    ) BaseHook(_poolManager) {
+    constructor(IPoolManager _poolManager, IPegCore _core, bytes32 _pegAssetInitCodeHash, uint256 _usdMarketId)
+        BaseHook(_poolManager)
+    {
         core = _core;
         PEGASSET_INIT_CODE_HASH = _pegAssetInitCodeHash;
         USD_MARKET_ID = _usdMarketId;
@@ -127,7 +132,7 @@ contract PegHook is BaseHook {
         return Hooks.Permissions({
             beforeInitialize: true,
             afterInitialize: false,
-            beforeAddLiquidity: false,
+            beforeAddLiquidity: true,
             afterAddLiquidity: false,
             beforeRemoveLiquidity: false,
             afterRemoveLiquidity: false,
@@ -156,14 +161,14 @@ contract PegHook is BaseHook {
         PoolId poolId = key.toId();
         if (channels[poolId].emaPrice != 0) revert ChannelAlreadyRegistered();
 
-        // Derive expected PegAsset address via CREATE2
-        address pegAsset = _computePegAsset(currencyId);
-
         address token0 = Currency.unwrap(key.currency0);
         address token1 = Currency.unwrap(key.currency1);
-        bool isPeg0 = (token0 == pegAsset);
-        bool isPeg1 = (token1 == pegAsset);
-        if (!isPeg0 && !isPeg1) revert InvalidChannel();
+        bool isPeg0 = _isPegAsset(token0);
+        bool isPeg1 = _isPegAsset(token1);
+        if (isPeg0 == isPeg1) revert InvalidChannel();
+
+        address pegAsset = _computePegAsset(currencyId);
+        if ((isPeg0 && token0 != pegAsset) || (isPeg1 && token1 != pegAsset)) revert InvalidChannel();
 
         // Seed EMA from oracle
         uint256 oracleRate = _oracle(marketId);
@@ -181,14 +186,34 @@ contract PegHook is BaseHook {
     //  Hook: beforeInitialize — validate dynamic fee
     // ═══════════════════════════════════════════════════════════════════════
 
-    function _beforeInitialize(address, PoolKey calldata key, uint160)
+    function _beforeInitialize(address, PoolKey calldata key, uint160) internal virtual override returns (bytes4) {
+        if (!key.fee.isDynamicFee()) revert NotDynamicFee();
+
+        bool token0IsPeg = _isPegAsset(Currency.unwrap(key.currency0));
+        bool token1IsPeg = _isPegAsset(Currency.unwrap(key.currency1));
+        if (token0IsPeg == token1IsPeg) revert InvalidChannel();
+
+        return this.beforeInitialize.selector;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  Hook: beforeAddLiquidity — enforce in-band channel ranges
+    // ═══════════════════════════════════════════════════════════════════════
+
+    function _beforeAddLiquidity(address, PoolKey calldata key, ModifyLiquidityParams calldata params, bytes calldata)
         internal
         virtual
         override
         returns (bytes4)
     {
-        if (!key.fee.isDynamicFee()) revert NotDynamicFee();
-        return this.beforeInitialize.selector;
+        if (channels[key.toId()].emaPrice == 0) revert ChannelNotRegistered();
+
+        int24 maxTickOffset = _maxTickOffset(key.tickSpacing);
+        if (params.tickLower < -maxTickOffset || params.tickUpper > maxTickOffset) {
+            revert InvalidLiquidityRange();
+        }
+
+        return this.beforeAddLiquidity.selector;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -235,24 +260,19 @@ contract PegHook is BaseHook {
 
         uint24 fee = isHealing ? 0 : PegMath.linearFee(absDev, MAX_DEVIATION, MAX_FEE);
 
-        return (
-            this.beforeSwap.selector,
-            BeforeSwapDeltaLibrary.ZERO_DELTA,
-            fee | LPFeeLibrary.OVERRIDE_FEE_FLAG
-        );
+        return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, fee | LPFeeLibrary.OVERRIDE_FEE_FLAG);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     //  Hook: afterSwap — update VW-EMA
     // ═══════════════════════════════════════════════════════════════════════
 
-    function _afterSwap(
-        address,
-        PoolKey calldata key,
-        SwapParams calldata,
-        BalanceDelta delta,
-        bytes calldata
-    ) internal virtual override returns (bytes4, int128) {
+    function _afterSwap(address, PoolKey calldata key, SwapParams calldata, BalanceDelta delta, bytes calldata)
+        internal
+        virtual
+        override
+        returns (bytes4, int128)
+    {
         PoolId poolId = key.toId();
         Channel storage ch = channels[poolId];
 
@@ -281,8 +301,53 @@ contract PegHook is BaseHook {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
+    //  Views
+    // ═══════════════════════════════════════════════════════════════════════
+
+    function oracle(PoolId poolId) external view returns (uint256) {
+        Channel storage ch = _channel(poolId);
+        return _oracle(_baseMarketId(ch));
+    }
+
+    function deviation(PoolId poolId) external view returns (int256) {
+        Channel storage ch = _channel(poolId);
+        uint256 oracleRate = _oracle(_baseMarketId(ch));
+        uint256 robustRate = _robustPrice(poolId, ch);
+        return int256(oracleRate) - int256(robustRate);
+    }
+
+    function price(PoolId poolId) external view returns (uint256) {
+        Channel storage ch = _channel(poolId);
+        return _robustPrice(poolId, ch);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
     //  Internal helpers
     // ═══════════════════════════════════════════════════════════════════════
+
+    function _channel(PoolId poolId) internal view returns (Channel storage ch) {
+        ch = channels[poolId];
+        if (ch.emaPrice == 0) revert ChannelNotRegistered();
+    }
+
+    function _baseMarketId(Channel storage ch) internal view returns (uint128) {
+        return ch.marketId & ~_PEG_IS_TOKEN0_BIT;
+    }
+
+    function _robustPrice(PoolId poolId, Channel storage ch) internal view returns (uint256) {
+        uint256 oracleRate = _oracle(_baseMarketId(ch));
+        uint256 poolRate = _poolRate(poolId, ch);
+        return PegMath.median(oracleRate, poolRate, uint256(ch.emaPrice));
+    }
+
+    function _poolRate(PoolId poolId, Channel storage ch) internal view returns (uint256) {
+        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolId);
+        return PegMath.sqrtPriceToWad(sqrtPriceX96, !_pegIsToken0(ch));
+    }
+
+    function _pegIsToken0(Channel storage ch) internal view returns (bool) {
+        return (ch.marketId & _PEG_IS_TOKEN0_BIT) != 0;
+    }
 
     /// @dev  oracle = core.marketPrice(mktId) / core.marketPrice(USD_MARKET_ID)
     ///       Both prices are WAD-scaled sUSDS prices.  Division cancels sUSDS
@@ -299,12 +364,23 @@ contract PegHook is BaseHook {
     function _computePegAsset(bytes32 currencyId) internal view returns (address) {
         return address(
             uint160(
-                uint256(
-                    keccak256(
-                        abi.encodePacked(bytes1(0xff), address(core), currencyId, PEGASSET_INIT_CODE_HASH)
-                    )
-                )
+                uint256(keccak256(abi.encodePacked(bytes1(0xff), address(core), currencyId, PEGASSET_INIT_CODE_HASH)))
             )
         );
+    }
+
+    function _isPegAsset(address token) internal view returns (bool) {
+        (bool ok, bytes memory data) = token.staticcall(abi.encodeCall(IPegAsset.currency, ()));
+        if (!ok || data.length != 32) return false;
+
+        bytes32 currencyId = abi.decode(data, (bytes32));
+        return token == _computePegAsset(currencyId);
+    }
+
+    function _maxTickOffset(int24 tickSpacing) internal pure returns (int24 maxTickOffset) {
+        maxTickOffset = (MAX_PEG_DEVIATION_TICK / tickSpacing) * tickSpacing;
+        if (maxTickOffset < MAX_PEG_DEVIATION_TICK) {
+            maxTickOffset += tickSpacing;
+        }
     }
 }

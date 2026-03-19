@@ -34,12 +34,14 @@ library PegMath {
     /// @return rate WAD-scaled price.
     function sqrtPriceToWad(uint160 sqrtPriceX96, bool invert) internal pure returns (uint256 rate) {
         uint256 sqrtP = uint256(sqrtPriceX96);
+        uint256 priceX128 = FullMath.mulDiv(sqrtP, sqrtP, 1 << 64);
+
         if (!invert) {
             // price = sqrtP² × 1e18 / 2^192
-            rate = FullMath.mulDiv(sqrtP * sqrtP, WAD, 1 << 192);
+            rate = FullMath.mulDiv(priceX128, WAD, 1 << 128);
         } else {
             // price = 2^192 × 1e18 / sqrtP²
-            rate = FullMath.mulDiv(1 << 192, WAD, sqrtP * sqrtP);
+            rate = FullMath.mulDiv(1 << 128, WAD, priceX128);
         }
     }
 
