@@ -11,31 +11,51 @@ import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
+import {ModifyLiquidityParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {CurrencyLibrary, Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {LiquidityAmounts} from "@uniswap/v4-core/test/utils/LiquidityAmounts.sol";
 import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 import {Constants} from "@uniswap/v4-core/test/utils/Constants.sol";
+import {BaseHook} from "@openzeppelin/uniswap-hooks/src/base/BaseHook.sol";
 
 import {BaseTest} from "./utils/BaseTest.sol";
 
 import {LaunchPool} from "../src/LaunchPool.sol";
-import {PegHook} from "../src/PegHook.sol";
-import {IPegCore} from "../src/interfaces/IPegCore.sol";
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  Minimal MockPegCore for LaunchPool tests (same as PegHook.t.sol)
-// ═══════════════════════════════════════════════════════════════════════════
+contract MockLaunchPoolHook is BaseHook {
+    constructor(IPoolManager _poolManager) BaseHook(_poolManager) {}
 
-contract MockPegCore2 is IPegCore {
-    mapping(uint256 => uint256) public prices;
-
-    function setMarketPrice(uint256 marketId, uint256 price) external {
-        prices[marketId] = price;
+    function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
+        return Hooks.Permissions({
+            beforeInitialize: true,
+            afterInitialize: false,
+            beforeAddLiquidity: true,
+            afterAddLiquidity: false,
+            beforeRemoveLiquidity: false,
+            afterRemoveLiquidity: false,
+            beforeSwap: false,
+            afterSwap: false,
+            beforeDonate: false,
+            afterDonate: false,
+            beforeSwapReturnDelta: false,
+            afterSwapReturnDelta: false,
+            afterAddLiquidityReturnDelta: false,
+            afterRemoveLiquidityReturnDelta: false
+        });
     }
 
-    function marketPrice(uint256 marketId) external view override returns (uint256) {
-        return prices[marketId];
+    function _beforeInitialize(address, PoolKey calldata, uint160) internal pure override returns (bytes4) {
+        return this.beforeInitialize.selector;
+    }
+
+    function _beforeAddLiquidity(address, PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata)
+        internal
+        pure
+        override
+        returns (bytes4)
+    {
+        return this.beforeAddLiquidity.selector;
     }
 }
 
@@ -49,27 +69,22 @@ contract LaunchPoolTest is BaseTest {
 
     // ─── Test tokens ─────────────────────────────────────────────────────
 
-    MockERC20 anchorToken;  // e.g. USDC
-    MockERC20 pegToken;     // e.g. pegJPY — paired with anchor
+    MockERC20 anchorToken; // e.g. USDC
+    MockERC20 pegToken; // e.g. pegJPY — paired with anchor
 
     Currency anchorCurrency;
     Currency pegCurrency;
 
     // ─── Hook ─────────────────────────────────────────────────────────────
 
-    PegHook hook;
-    MockPegCore2 mockCore;
-
-    uint128 constant MOCK_MARKET_ID = 1;
-    uint128 constant MOCK_USD_ID    = 2;
-    bytes32 constant MOCK_HASH      = keccak256("MOCK_PEGASSET");
+    MockLaunchPoolHook hook;
 
     // ─── LaunchPool ───────────────────────────────────────────────────────
 
     LaunchPool pool;
 
-    uint256 constant SEED_TARGET   = 10_000e18;  // 10k anchor units
-    uint40  constant SEED_DURATION = 7 days;
+    uint256 constant SEED_TARGET = 10_000e18; // 10k anchor units
+    uint40 constant SEED_DURATION = 7 days;
 
     // ─── Pool geometry ────────────────────────────────────────────────────
 
@@ -81,7 +96,7 @@ contract LaunchPoolTest is BaseTest {
     // ─── Users ────────────────────────────────────────────────────────────
 
     address alice = makeAddr("alice");
-    address bob   = makeAddr("bob");
+    address bob = makeAddr("bob");
 
     // ─── Setup ────────────────────────────────────────────────────────────
 
@@ -92,11 +107,11 @@ contract LaunchPoolTest is BaseTest {
         // We need anchor = currency1 for the single-sided-below-peg constraint.
         // We'll force layout by choosing addresses.
         anchorToken = new MockERC20("USD Coin", "USDC", 18);
-        pegToken    = new MockERC20("Peg JPY",  "pegJPY", 18);
+        pegToken = new MockERC20("Peg JPY", "pegJPY", 18);
 
         // Mint to test users and self.
         anchorToken.mint(alice, 100_000e18);
-        anchorToken.mint(bob,   100_000e18);
+        anchorToken.mint(bob, 100_000e18);
         anchorToken.mint(address(this), 100_000e18);
 
         // Ensure anchor > pegToken in address sort so anchor = currency1.
@@ -105,10 +120,10 @@ contract LaunchPoolTest is BaseTest {
             // anchorToken is currency0 — re-deploy to flip.
             // Easier: just accept the order and set the correct TICK bounds.
             anchorCurrency = Currency.wrap(address(anchorToken));
-            pegCurrency    = Currency.wrap(address(pegToken));
+            pegCurrency = Currency.wrap(address(pegToken));
         } else {
             anchorCurrency = Currency.wrap(address(anchorToken));
-            pegCurrency    = Currency.wrap(address(pegToken));
+            pegCurrency = Currency.wrap(address(pegToken));
         }
 
         // Approve permit2 for test contract and users.
@@ -116,30 +131,16 @@ contract LaunchPoolTest is BaseTest {
         _approvePermit2(alice);
         _approvePermit2(bob);
 
-        // Deploy mock PegCore.
-        mockCore = new MockPegCore2();
-        mockCore.setMarketPrice(MOCK_MARKET_ID, 0.0076e18);
-        mockCore.setMarketPrice(MOCK_USD_ID,    1.14e18);
-
-        // Deploy PegHook at flag-encoded address.
-        uint160 flags = uint160(
-            Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
-        );
+        // Deploy a permissive hook at a flag-encoded address.
+        uint160 flags = uint160(Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG);
         address hookAddr = address(flags ^ (0x5555 << 144));
-        deployCodeTo("PegHook.sol:PegHook", abi.encode(
-            poolManager, address(mockCore), MOCK_HASH, uint256(MOCK_USD_ID)
-        ), hookAddr);
-        hook = PegHook(hookAddr);
-        vm.label(hookAddr, "PegHook");
+        deployCodeTo("LaunchPool.t.sol:MockLaunchPoolHook", abi.encode(poolManager), hookAddr);
+        hook = MockLaunchPoolHook(hookAddr);
+        vm.label(hookAddr, "MockLaunchPoolHook");
 
         // Deploy LaunchPool — owner = address(this).
         pool = new LaunchPool(
-            IERC20(address(anchorToken)),
-            SEED_TARGET,
-            SEED_DURATION,
-            poolManager,
-            positionManager,
-            permit2
+            IERC20(address(anchorToken)), SEED_TARGET, SEED_DURATION, poolManager, positionManager, permit2
         );
         vm.label(address(pool), "LaunchPool");
     }
@@ -177,11 +178,7 @@ contract LaunchPoolTest is BaseTest {
     /// @dev Figure out tick bounds appropriate for single-sided anchor.
     ///      If anchor = currency1 → range below peg (tickUpper=0).
     ///      If anchor = currency0 → range above peg (tickLower=0).
-    function _singleSidedTicks(PoolKey memory key)
-        internal
-        view
-        returns (int24 tl, int24 tu)
-    {
+    function _singleSidedTicks(PoolKey memory key) internal view returns (int24 tl, int24 tu) {
         if (Currency.unwrap(key.currency1) == address(anchorToken)) {
             tl = -240;
             tu = 0;
@@ -192,25 +189,17 @@ contract LaunchPoolTest is BaseTest {
     }
 
     /// @dev Compute liquidity for the single-sided anchor position.
-    function _computeLiquidity(PoolKey memory key, int24 tl, int24 tu)
-        internal
-        view
-        returns (uint128)
-    {
+    function _computeLiquidity(PoolKey memory key, int24 tl, int24 tu) internal view returns (uint128) {
         bool anchorIs1 = Currency.unwrap(key.currency1) == address(anchorToken);
         if (anchorIs1) {
             // Single-sided token1: getLiquidityForAmount1
             return LiquidityAmounts.getLiquidityForAmount1(
-                TickMath.getSqrtPriceAtTick(tl),
-                TickMath.getSqrtPriceAtTick(tu),
-                pool.totalDeposits()
+                TickMath.getSqrtPriceAtTick(tl), TickMath.getSqrtPriceAtTick(tu), pool.totalDeposits()
             );
         } else {
             // Single-sided token0: getLiquidityForAmount0
             return LiquidityAmounts.getLiquidityForAmount0(
-                TickMath.getSqrtPriceAtTick(tl),
-                TickMath.getSqrtPriceAtTick(tu),
-                pool.totalDeposits()
+                TickMath.getSqrtPriceAtTick(tl), TickMath.getSqrtPriceAtTick(tu), pool.totalDeposits()
             );
         }
     }
@@ -243,7 +232,7 @@ contract LaunchPoolTest is BaseTest {
 
     function testMultipleDepositors() public {
         _depositAs(alice, 6_000e18);
-        _depositAs(bob,   4_000e18);
+        _depositAs(bob, 4_000e18);
 
         assertEq(pool.totalDeposits(), 10_000e18);
         assertEq(uint256(pool.stage()), uint256(LaunchPool.Stage.Seeding));
@@ -258,8 +247,7 @@ contract LaunchPoolTest is BaseTest {
         vm.startPrank(alice);
         anchorToken.approve(address(pool), 1e18);
         vm.expectRevert(
-            abi.encodeWithSelector(LaunchPool.InvalidStage.selector,
-                LaunchPool.Stage.Seeding, LaunchPool.Stage.Failed)
+            abi.encodeWithSelector(LaunchPool.InvalidStage.selector, LaunchPool.Stage.Seeding, LaunchPool.Stage.Failed)
         );
         pool.deposit(1e18, alice);
         vm.stopPrank();
@@ -271,8 +259,7 @@ contract LaunchPoolTest is BaseTest {
         vm.startPrank(alice);
         anchorToken.approve(address(pool), 1e18);
         vm.expectRevert(
-            abi.encodeWithSelector(LaunchPool.InvalidStage.selector,
-                LaunchPool.Stage.Seeding, LaunchPool.Stage.Active)
+            abi.encodeWithSelector(LaunchPool.InvalidStage.selector, LaunchPool.Stage.Seeding, LaunchPool.Stage.Active)
         );
         pool.deposit(1e18, alice);
         vm.stopPrank();
@@ -296,7 +283,7 @@ contract LaunchPoolTest is BaseTest {
         uint256 balAfter = anchorToken.balanceOf(alice);
 
         assertEq(balAfter - balBefore, amount, "withdraw amount mismatch");
-        assertEq(pool.deposits(alice), 0,      "deposit not cleared");
+        assertEq(pool.deposits(alice), 0, "deposit not cleared");
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -308,8 +295,7 @@ contract LaunchPoolTest is BaseTest {
 
         vm.prank(alice);
         vm.expectRevert(
-            abi.encodeWithSelector(LaunchPool.InvalidStage.selector,
-                LaunchPool.Stage.Failed, LaunchPool.Stage.Seeding)
+            abi.encodeWithSelector(LaunchPool.InvalidStage.selector, LaunchPool.Stage.Failed, LaunchPool.Stage.Seeding)
         );
         pool.withdraw();
     }
@@ -333,10 +319,7 @@ contract LaunchPoolTest is BaseTest {
         PoolKey memory key = _buildKey();
         (int24 tl, int24 tu) = _singleSidedTicks(key);
 
-        vm.expectRevert(
-            abi.encodeWithSelector(LaunchPool.TargetNotMet.selector,
-                SEED_TARGET / 2, SEED_TARGET)
-        );
+        vm.expectRevert(abi.encodeWithSelector(LaunchPool.TargetNotMet.selector, SEED_TARGET / 2, SEED_TARGET));
         pool.activate(key, tl, tu, 1000);
     }
 
@@ -370,7 +353,7 @@ contract LaunchPoolTest is BaseTest {
     function testRedeemAfterActivation() public {
         // Alice 60%, Bob 40%
         _depositAs(alice, 6_000e18);
-        _depositAs(bob,   4_000e18);
+        _depositAs(bob, 4_000e18);
 
         PoolKey memory key = _buildKey();
         (int24 tl, int24 tu) = _singleSidedTicks(key);
@@ -389,10 +372,7 @@ contract LaunchPoolTest is BaseTest {
 
         // Both should have received some output tokens (anchor + maybe peg).
         // Single-sided position → primarily anchor returned.
-        assertTrue(
-            anchorToken.balanceOf(alice) > 100_000e18 - 6_000e18,
-            "alice should receive anchor back"
-        );
+        assertTrue(anchorToken.balanceOf(alice) > 100_000e18 - 6_000e18, "alice should receive anchor back");
     }
 
     function testRedeemWithNothingReverts() public {
@@ -419,8 +399,9 @@ contract LaunchPoolTest is BaseTest {
         vm.startPrank(alice);
         anchorToken.approve(address(pool), 1e18);
         vm.expectRevert(
-            abi.encodeWithSelector(LaunchPool.InvalidStage.selector,
-                LaunchPool.Stage.Seeding, LaunchPool.Stage.PendingActivation)
+            abi.encodeWithSelector(
+                LaunchPool.InvalidStage.selector, LaunchPool.Stage.Seeding, LaunchPool.Stage.PendingActivation
+            )
         );
         pool.deposit(1e18, alice);
         vm.stopPrank();

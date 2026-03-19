@@ -10,16 +10,16 @@ import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
+import {ModifyLiquidityParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
+import {BaseHook} from "@openzeppelin/uniswap-hooks/src/base/BaseHook.sol";
 
 import {BaseTest} from "./utils/BaseTest.sol";
 
 import {MarketManager} from "../src/MarketManager.sol";
 import {LaunchPool} from "../src/LaunchPool.sol";
-import {PegHook} from "../src/PegHook.sol";
-import {IPegCore} from "../src/interfaces/IPegCore.sol";
 import {IMarketManagerCore, Id, MarketParams} from "../src/interfaces/IMarketManagerCore.sol";
 import {IPegAssetFactory} from "../src/interfaces/IPegAssetFactory.sol";
 
@@ -28,7 +28,7 @@ import {IPegAssetFactory} from "../src/interfaces/IPegAssetFactory.sol";
 // ═══════════════════════════════════════════════════════════════════════════
 
 contract MockMMCore is IMarketManagerCore {
-    mapping(bytes32 => bool)   public created;
+    mapping(bytes32 => bool) public created;
     mapping(bytes32 => uint112) public borrowCaps;
 
     function createMarket(MarketParams calldata p) external {
@@ -57,13 +57,39 @@ contract MockMMFactory is IPegAssetFactory {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  Mock: minimal IPegCore for PegHook constructor
-// ═══════════════════════════════════════════════════════════════════════════
+contract MockMarketManagerHook is BaseHook {
+    constructor(IPoolManager _poolManager) BaseHook(_poolManager) {}
 
-contract MockPegCoreForHook is IPegCore {
-    function marketPrice(uint256) external pure returns (uint256) {
-        return 1e18;
+    function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
+        return Hooks.Permissions({
+            beforeInitialize: true,
+            afterInitialize: false,
+            beforeAddLiquidity: true,
+            afterAddLiquidity: false,
+            beforeRemoveLiquidity: false,
+            afterRemoveLiquidity: false,
+            beforeSwap: false,
+            afterSwap: false,
+            beforeDonate: false,
+            afterDonate: false,
+            beforeSwapReturnDelta: false,
+            afterSwapReturnDelta: false,
+            afterAddLiquidityReturnDelta: false,
+            afterRemoveLiquidityReturnDelta: false
+        });
+    }
+
+    function _beforeInitialize(address, PoolKey calldata, uint160) internal pure override returns (bytes4) {
+        return this.beforeInitialize.selector;
+    }
+
+    function _beforeAddLiquidity(address, PoolKey calldata, ModifyLiquidityParams calldata, bytes calldata)
+        internal
+        pure
+        override
+        returns (bytes4)
+    {
+        return this.beforeAddLiquidity.selector;
     }
 }
 
@@ -76,26 +102,26 @@ contract MarketManagerTest is BaseTest {
 
     // ─── Constants ────────────────────────────────────────────────────────
 
-    uint256 constant SEED_TARGET   = 10_000e18;
-    uint40  constant SEED_DURATION = 7 days;
-    uint112 constant BORROW_CAP    = 1_000_000e18;
+    uint256 constant SEED_TARGET = 10_000e18;
+    uint40 constant SEED_DURATION = 7 days;
+    uint112 constant BORROW_CAP = 1_000_000e18;
 
     // ─── Shared state ─────────────────────────────────────────────────────
 
-    MockMMCore     mockCore;
-    MockMMFactory  mockFactory;
-    MockERC20      anchorToken;
-    MockERC20      pegToken;
-    PegHook        hook;
-    MarketManager  mm;
+    MockMMCore mockCore;
+    MockMMFactory mockFactory;
+    MockERC20 anchorToken;
+    MockERC20 pegToken;
+    MockMarketManagerHook hook;
+    MarketManager mm;
 
     // Sort-order-dependent tick bounds (set in setUp after address comparison)
-    bool  anchorIsToken0;
+    bool anchorIsToken0;
     int24 tickLower;
     int24 tickUpper;
 
     address alice = makeAddr("alice");
-    address bob   = makeAddr("bob");
+    address bob = makeAddr("bob");
 
     // ─── Setup ────────────────────────────────────────────────────────────
 
@@ -103,13 +129,13 @@ contract MarketManagerTest is BaseTest {
         deployArtifactsAndLabel();
 
         // Deploy mock core + factory.
-        mockCore    = new MockMMCore();
+        mockCore = new MockMMCore();
         mockFactory = new MockMMFactory();
 
         // Deploy anchor + peg tokens.  Their relative address order determines
         // which token is currency0 and therefore which tick-side is "single-sided".
         anchorToken = new MockERC20("USD Coin", "USDC", 18);
-        pegToken    = new MockERC20("Peg JPY",  "pegJPY", 18);
+        pegToken = new MockERC20("Peg JPY", "pegJPY", 18);
 
         // Wire factory to return the pre-deployed pegToken.
         mockFactory.setNextAsset(address(pegToken));
@@ -127,19 +153,12 @@ contract MarketManagerTest is BaseTest {
             tickUpper = 0;
         }
 
-        // Deploy PegHook at the correct flag-encoded address.
-        MockPegCoreForHook hookCore = new MockPegCoreForHook();
-        uint160 flags = uint160(
-            Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
-        );
+        // Deploy a permissive hook at the correct flag-encoded address.
+        uint160 flags = uint160(Hooks.BEFORE_INITIALIZE_FLAG | Hooks.BEFORE_ADD_LIQUIDITY_FLAG);
         address hookAddr = address(flags ^ (0x4444 << 144));
-        deployCodeTo(
-            "PegHook.sol:PegHook",
-            abi.encode(poolManager, address(hookCore), bytes32(0), uint256(0)),
-            hookAddr
-        );
-        hook = PegHook(hookAddr);
-        vm.label(hookAddr, "PegHook");
+        deployCodeTo("MarketManager.t.sol:MockMarketManagerHook", abi.encode(poolManager), hookAddr);
+        hook = MockMarketManagerHook(hookAddr);
+        vm.label(hookAddr, "MockMarketManagerHook");
 
         // Deploy MarketManager — address(this) is the owner.
         mm = new MarketManager(
@@ -154,7 +173,7 @@ contract MarketManagerTest is BaseTest {
 
         // Fund alice, approve permit2 globally for anchor → LaunchPool.
         anchorToken.mint(alice, 100_000e18);
-        anchorToken.mint(bob,    100_000e18);
+        anchorToken.mint(bob, 100_000e18);
         _approvePermit2(alice);
         _approvePermit2(bob);
     }
@@ -170,11 +189,11 @@ contract MarketManagerTest is BaseTest {
     /// @dev MarketConfig with correct tick bounds for the current token sort order.
     function _config() internal view returns (MarketManager.MarketConfig memory) {
         return MarketManager.MarketConfig({
-            anchor:           IERC20(address(anchorToken)),
-            launchTarget:     SEED_TARGET,
-            launchDuration:   SEED_DURATION,
-            tickLower:        tickLower,
-            tickUpper:        tickUpper,
+            anchor: IERC20(address(anchorToken)),
+            launchTarget: SEED_TARGET,
+            launchDuration: SEED_DURATION,
+            tickLower: tickLower,
+            tickUpper: tickUpper,
             initialBorrowCap: BORROW_CAP
         });
     }
@@ -182,10 +201,7 @@ contract MarketManagerTest is BaseTest {
     /// @dev Dummy MarketParams — loanToken is overwritten by mm.create().
     function _params() internal pure returns (MarketParams memory) {
         return MarketParams({
-            collateralToken: address(0x1111),
-            loanToken:       address(0),
-            oracle:          address(0x2222),
-            model:           address(0x3333)
+            collateralToken: address(0x1111), loanToken: address(0), oracle: address(0x2222), model: address(0x3333)
         });
     }
 
@@ -290,9 +306,7 @@ contract MarketManagerTest is BaseTest {
 
         assertEq(uint256(lp.stage()), uint256(LaunchPool.Stage.Seeding));
 
-        vm.expectRevert(
-            abi.encodeWithSelector(MarketManager.NotReady.selector, LaunchPool.Stage.Seeding)
-        );
+        vm.expectRevert(abi.encodeWithSelector(MarketManager.NotReady.selector, LaunchPool.Stage.Seeding));
         mm.activate(marketId);
     }
 
@@ -311,9 +325,7 @@ contract MarketManagerTest is BaseTest {
         vm.warp(block.timestamp + SEED_DURATION + 1);
         assertEq(uint256(lp.stage()), uint256(LaunchPool.Stage.Failed));
 
-        vm.expectRevert(
-            abi.encodeWithSelector(MarketManager.NotReady.selector, LaunchPool.Stage.Failed)
-        );
+        vm.expectRevert(abi.encodeWithSelector(MarketManager.NotReady.selector, LaunchPool.Stage.Failed));
         mm.activate(marketId);
     }
 
@@ -337,7 +349,7 @@ contract MarketManagerTest is BaseTest {
 
         // LP position was minted with real liquidity.
         assertTrue(lp.lpLiquidity() > 0, "no liquidity minted");
-        assertTrue(lp.lpTokenId() > 0,   "no token id");
+        assertTrue(lp.lpTokenId() > 0, "no token id");
     }
 
     // ═════════════════════════════════════════════════════════════════════

@@ -51,13 +51,13 @@ contract PegMainnetForkTest is PegMainnetForkFixtures {
         uint256 baseVaultPrice = IERC4626Like(BASE_VAULT).convertToAssets(1 ether);
 
         uint256 susdsPegUsdPrice = IOracle(fixture.pegUsdOracleAddress).price();
-        uint256 computedSusdsPegUsdPrice = (baseVaultPrice * baseUsdPrice * ORACLE_PRICE_SCALE) /
-            (1 ether * (10 ** uint256(baseUsdDecimals)));
+        uint256 computedSusdsPegUsdPrice =
+            (baseVaultPrice * baseUsdPrice * ORACLE_PRICE_SCALE) / (1 ether * (10 ** uint256(baseUsdDecimals)));
 
         uint256 susdsWethPrice = IOracle(fixture.pegEthOracleAddress).price();
         uint256 computedSusdsWethPrice =
-            (baseVaultPrice * baseUsdPrice * ORACLE_PRICE_SCALE * (10 ** uint256(quoteUsdDecimals))) /
-            (1 ether * quoteUsdPrice * (10 ** uint256(baseUsdDecimals)));
+            (baseVaultPrice * baseUsdPrice * ORACLE_PRICE_SCALE * (10 ** uint256(quoteUsdDecimals)))
+                / (1 ether * quoteUsdPrice * (10 ** uint256(baseUsdDecimals)));
 
         assertGt(baseVaultPrice, 0);
         assertEq(susdsPegUsdPrice, computedSusdsPegUsdPrice);

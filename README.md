@@ -1,15 +1,14 @@
-# Uniswap v4 Hook Template
-
-**A template for writing Uniswap v4 Hooks 🦄**
+# Peg Hooks
 
 ### Get Started
 
-This template provides a starting point for writing Uniswap v4 Hooks, including a simple example and preconfigured test environment. Start by creating a new repository using the "Use this template" button at the top right of this page. Alternatively you can also click this link:
+This repository contains peg.markets hook contracts, launch tooling, and tests built on top of Uniswap v4.
 
-[![Use this Template](https://img.shields.io/badge/Use%20this%20Template-101010?style=for-the-badge&logo=github)](https://github.com/uniswapfoundation/v4-template/generate)
+Primary contracts:
 
-1. The example hook [Counter.sol](src/Counter.sol) demonstrates the `beforeSwap()` and `afterSwap()` hooks
-2. The test template [Counter.t.sol](test/Counter.t.sol) preconfigures the v4 pool manager, test tokens, and test liquidity.
+1. [src/PegHook.sol](src/PegHook.sol) implements the channel-pool fee and liquidity controls.
+2. [src/LaunchPool.sol](src/LaunchPool.sol) handles launch-time single-sided liquidity bootstrapping.
+3. [src/MarketManager.sol](src/MarketManager.sol) coordinates market creation and graduation.
 
 <details>
 <summary>Updating to v4-template:latest</summary>
@@ -52,30 +51,7 @@ The current fork fixture uses Ethereum mainnet block `24688680`.
 
 ### Local Development
 
-Other than writing unit tests (recommended!), you can only deploy & test hooks on [anvil](https://book.getfoundry.sh/anvil/) locally. Scripts are available in the `script/` directory, which can be used to deploy hooks, create pools, provide liquidity and swap tokens. The scripts support both local `anvil` environment as well as running them directly on a production network.
-
-### Executing locally with using **Anvil**:
-
-1. Start Anvil (or fork a specific chain using anvil):
-
-```bash
-anvil
-```
-
-or
-
-```bash
-anvil --fork-url <YOUR_RPC_URL>
-```
-
-2. Execute scripts:
-
-```bash
-forge script script/00_DeployHook.s.sol \
-    --rpc-url http://localhost:8545 \
-    --private-key <PRIVATE_KEY> \
-    --broadcast
-```
+Other than writing unit tests, local development is done against [anvil](https://book.getfoundry.sh/anvil/) or a forked chain. Project scripts live in the [script](script) directory and are oriented around the PegHook flow rather than the removed Counter example.
 
 ### Using **RPC URLs** (actual transactions):
 
@@ -112,15 +88,7 @@ Use `history -c` to clear your command history.
 
 </details>
 
-1. Execute scripts:
-
-```bash
-forge script script/00_DeployHook.s.sol \
-    --rpc-url <YOUR_RPC_URL> \
-    --account <YOUR_WALLET_PRIVATE_KEY_NAME> \
-    --sender <YOUR_WALLET_ADDRESS> \
-    --broadcast
-```
+1. Execute the relevant script from the [script](script) directory with your desired RPC, account, and sender configuration.
 
 You will prompted to enter your wallet password, fill and press enter:
 
