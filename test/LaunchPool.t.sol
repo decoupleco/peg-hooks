@@ -156,7 +156,7 @@ contract LaunchPoolTest is BaseTest {
     function _depositAs(address user, uint256 amount) internal {
         vm.startPrank(user);
         anchorToken.approve(address(pool), amount);
-        pool.deposit(amount);
+        pool.deposit(amount, user);
         vm.stopPrank();
     }
 
@@ -261,7 +261,7 @@ contract LaunchPoolTest is BaseTest {
             abi.encodeWithSelector(LaunchPool.InvalidStage.selector,
                 LaunchPool.Stage.Seeding, LaunchPool.Stage.Failed)
         );
-        pool.deposit(1e18);
+        pool.deposit(1e18, alice);
         vm.stopPrank();
     }
 
@@ -274,7 +274,7 @@ contract LaunchPoolTest is BaseTest {
             abi.encodeWithSelector(LaunchPool.InvalidStage.selector,
                 LaunchPool.Stage.Seeding, LaunchPool.Stage.Active)
         );
-        pool.deposit(1e18);
+        pool.deposit(1e18, alice);
         vm.stopPrank();
     }
 
@@ -402,5 +402,62 @@ contract LaunchPoolTest is BaseTest {
         vm.prank(bob);
         vm.expectRevert(LaunchPool.NothingToRedeem.selector);
         pool.redeem();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  Test: PendingActivation stage (blocking issue #1 fix)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// @dev After deadline, if target was met, stage = PendingActivation.
+    ///      Deposits must be rejected even though contract is not yet activated.
+    function testDepositAfterDeadlineTargetMetReverts() public {
+        _depositAs(alice, SEED_TARGET);
+        vm.warp(block.timestamp + SEED_DURATION + 1);
+
+        assertEq(uint256(pool.stage()), uint256(LaunchPool.Stage.PendingActivation));
+
+        vm.startPrank(alice);
+        anchorToken.approve(address(pool), 1e18);
+        vm.expectRevert(
+            abi.encodeWithSelector(LaunchPool.InvalidStage.selector,
+                LaunchPool.Stage.Seeding, LaunchPool.Stage.PendingActivation)
+        );
+        pool.deposit(1e18, alice);
+        vm.stopPrank();
+    }
+
+    /// @dev Owner can call activate() from PendingActivation (post-deadline).
+    function testActivateInPendingStage() public {
+        _depositAs(alice, SEED_TARGET);
+        vm.warp(block.timestamp + SEED_DURATION + 1);
+
+        assertEq(uint256(pool.stage()), uint256(LaunchPool.Stage.PendingActivation));
+
+        PoolKey memory key = _buildKey();
+        (int24 tl, int24 tu) = _singleSidedTicks(key);
+        uint128 liq = _computeLiquidity(key, tl, tu);
+        pool.activate(key, tl, tu, liq);
+
+        assertTrue(pool.activated(), "should be active after deadline activation");
+        assertEq(uint256(pool.stage()), uint256(LaunchPool.Stage.Active));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  Test: ERC-4626 view surface
+    // ═══════════════════════════════════════════════════════════════════════
+
+    function testERC4626Views() public {
+        assertEq(pool.asset(), address(anchorToken), "asset");
+        assertEq(pool.totalAssets(), 0, "totalAssets empty");
+        assertEq(pool.convertToShares(1_000e18), 1_000e18, "convertToShares 1:1");
+        assertEq(pool.convertToAssets(1_000e18), 1_000e18, "convertToAssets 1:1");
+        assertEq(pool.maxDeposit(alice), type(uint256).max, "maxDeposit open");
+
+        _depositAs(alice, 5_000e18);
+        assertEq(pool.totalAssets(), 5_000e18, "totalAssets after deposit");
+
+        // After deadline without hitting target: maxDeposit = 0
+        vm.warp(block.timestamp + SEED_DURATION + 1);
+        assertEq(pool.maxDeposit(alice), 0, "maxDeposit closed after deadline");
     }
 }

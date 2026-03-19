@@ -27,13 +27,15 @@ import {IPermit2} from "permit2/src/interfaces/IPermit2.sol";
 ///
 /// Lifecycle
 /// ─────────
-///   Seeding   — deposits accepted, withdrawals locked
+///   Seeding          — deposits accepted (block.timestamp ≤ deadline)
 ///     │
-///     ├─ target not met before deadline → Failed (withdrawals unlock)
+///     ├─ deadline passes, target NOT met → Failed (withdrawals unlock)
 ///     │
-///     └─ owner calls activate() ──► Active (deposit target met)
-///                                      │
-///                                      └─ users call redeem() ──► pegToken + anchor
+///     └─ deadline passes, target met     → PendingActivation
+///                                              │
+///                                              └─ owner calls activate() ──► Active
+///                                                    │
+///                                                    └─ users redeem() ──► pegToken + anchor
 ///
 /// Single-sided LP
 /// ───────────────
@@ -43,7 +45,9 @@ import {IPermit2} from "permit2/src/interfaces/IPermit2.sol";
 ///   approximately 200 ticks; with tickSpacing = 60 that is (-240, 0) or
 ///   (0, 240) depending on which currency is the anchor.
 ///
-/// @dev  No Solady / ERC-4626.  Plain deposit accounting:
+/// @dev  Implements minimum ERC-4626 view surface (asset, totalAssets,
+///       convertToShares, convertToAssets, maxDeposit) over plain deposit
+///       accounting.  Shares are not tokenised — deposits[user] IS the share.
 ///         userShare = lpLiquidity × deposits[user] / totalDeposits
 ///       Redeem removes exactly `userShare` units from the V4 position and
 ///       delivers the output tokens directly to the caller.
@@ -56,9 +60,10 @@ contract LaunchPool is IERC721Receiver {
     // ═══════════════════════════════════════════════════════════════════════
 
     enum Stage {
-        Seeding, // accepting deposits, not yet activated
-        Failed,  // deadline passed without meeting target, withdrawals open
-        Active   // activated, redeem available
+        Seeding,           // deposits open — deadline not yet reached
+        PendingActivation, // deadline passed, target met, awaiting activate()
+        Failed,            // deadline passed, target not met — withdrawals open
+        Active             // activated — redeem available
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -126,7 +131,7 @@ contract LaunchPool is IERC721Receiver {
     //  Events
     // ═══════════════════════════════════════════════════════════════════════
 
-    event Deposited(address indexed user, uint256 amount);
+    event Deposited(address indexed receiver, uint256 assets, uint256 shares);
     event Withdrawn(address indexed user, uint256 amount);
     event Activated(PoolId indexed poolId, uint256 lpTokenId, uint128 liquidity);
     event Redeemed(address indexed user, uint128 liquidity);
@@ -141,6 +146,7 @@ contract LaunchPool is IERC721Receiver {
     error TargetNotMet(uint256 total, uint256 target_);
     error TicksNotSingleSided();
     error LiquidityZero();
+    error LiquidityMintFailed();
     error NothingToRedeem();
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -192,8 +198,39 @@ contract LaunchPool is IERC721Receiver {
     /// @notice Derive current lifecycle stage from state.
     function stage() public view returns (Stage) {
         if (activated) return Stage.Active;
-        if (block.timestamp > deadline && totalDeposits < target) return Stage.Failed;
+        if (block.timestamp > deadline) {
+            return totalDeposits >= target ? Stage.PendingActivation : Stage.Failed;
+        }
         return Stage.Seeding;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  ERC-4626 minimal interface (view + deposit signature)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// @notice The underlying token collected during seeding.
+    function asset() external view returns (address) {
+        return address(anchor);
+    }
+
+    /// @notice Total anchor assets held (meaningful during Seeding/PendingActivation).
+    function totalAssets() external view returns (uint256) {
+        return totalDeposits;
+    }
+
+    /// @notice Shares are 1:1 with deposited assets (deposits[user] IS the share).
+    function convertToShares(uint256 assets) external pure returns (uint256) {
+        return assets;
+    }
+
+    /// @notice Inverse: 1:1 mapping before activation.
+    function convertToAssets(uint256 shares) external pure returns (uint256) {
+        return shares;
+    }
+
+    /// @notice Returns max depositable amount for an address (0 if not Seeding).
+    function maxDeposit(address) external view returns (uint256) {
+        return stage() == Stage.Seeding ? type(uint256).max : 0;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -201,14 +238,22 @@ contract LaunchPool is IERC721Receiver {
     // ═══════════════════════════════════════════════════════════════════════
 
     /// @notice Deposit anchor tokens during the seeding window.
-    /// @dev    Stage must be Seeding (not yet activated, within deadline).
-    /// @param amount Anchor amount to deposit (must be pre-approved).
-    function deposit(uint256 amount) external onlyStage(Stage.Seeding) {
-        if (amount == 0) revert ZeroAmount();
-        anchor.safeTransferFrom(msg.sender, address(this), amount);
-        deposits[msg.sender] += amount;
-        totalDeposits += amount;
-        emit Deposited(msg.sender, amount);
+    /// @dev    ERC-4626-style signature.  `receiver` gets shares credited;
+    ///         tokens are pulled from `msg.sender`.  Stage must be Seeding.
+    /// @param assets   Anchor amount to deposit (must be pre-approved by caller).
+    /// @param receiver Account whose `deposits[]` balance is credited.
+    /// @return shares  Always equals `assets` (1:1 accounting).
+    function deposit(uint256 assets, address receiver)
+        external
+        onlyStage(Stage.Seeding)
+        returns (uint256 shares)
+    {
+        if (assets == 0) revert ZeroAmount();
+        anchor.safeTransferFrom(msg.sender, address(this), assets);
+        deposits[receiver] += assets;
+        totalDeposits += assets;
+        shares = assets;
+        emit Deposited(receiver, assets, shares);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -252,7 +297,12 @@ contract LaunchPool is IERC721Receiver {
         int24 _tickLower,
         int24 _tickUpper,
         uint128 _liquidity
-    ) external onlyOwner onlyStage(Stage.Seeding) {
+    ) external onlyOwner {
+        // Allow activation from Seeding (early) or PendingActivation (post-deadline).
+        Stage s = stage();
+        if (s != Stage.Seeding && s != Stage.PendingActivation) {
+            revert InvalidStage(Stage.PendingActivation, s);
+        }
         if (totalDeposits < target) revert TargetNotMet(totalDeposits, target);
         if (_liquidity == 0) revert LiquidityZero();
 
@@ -318,7 +368,7 @@ contract LaunchPool is IERC721Receiver {
         params[2] = abi.encode(key.currency0, address(this));  // SWEEP c0 dust
         params[3] = abi.encode(key.currency1, address(this));  // SWEEP c1 dust
 
-        // Record the next NFT id before minting.
+        // Record the next NFT id before minting (PositionManager increments sequentially).
         uint256 tokenId = positionManager.nextTokenId();
 
         positionManager.modifyLiquidities(
@@ -326,12 +376,17 @@ contract LaunchPool is IERC721Receiver {
             block.timestamp + 3600
         );
 
-        // ── Step 4: record state ─────────────────────────────────────────
-        lpTokenId = tokenId;
-        lpLiquidity = _liquidity;
-        activated = true;
+        // ── Step 4: verify and record state ─────────────────────────────
+        // Read actual minted liquidity from the position — guards against tick
+        // rounding and validates the tokenId assumption.
+        uint128 actualLiquidity = positionManager.getPositionLiquidity(tokenId);
+        if (actualLiquidity == 0) revert LiquidityMintFailed();
 
-        emit Activated(key.toId(), tokenId, _liquidity);
+        lpTokenId   = tokenId;
+        lpLiquidity = actualLiquidity;
+        activated   = true;
+
+        emit Activated(key.toId(), tokenId, actualLiquidity);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
