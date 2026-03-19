@@ -1,0 +1,335 @@
+{
+  "_format": "hh-sol-artifact-1",
+  "contractName": "PegModel",
+  "sourceName": "contracts/core/PegModel.sol",
+  "abi": [
+    {
+      "inputs": [],
+      "stateMutability": "nonpayable",
+      "type": "constructor"
+    },
+    {
+      "inputs": [],
+      "name": "AlreadySet",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "InconsistentInput",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "InsufficientCollateral",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "InsufficientSwapLiquidity",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "InvalidAddress",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "InvalidLltv",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "InvalidMarketParams",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "InvalidPrice",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "InvalidSwap",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "LltvNotEnabled",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "MarketAlreadyExists",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "MarketNotActive",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "MarketNotFound",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "NoSpareCapacity",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "NotMinter",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "PendingFeeDust",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "SlippageExceeded",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "SwapNotEnabled",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "TransferAmountExceedsAllowance",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "TransferAmountExceedsBalance",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "Unauthorized",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "UnsupportedFeature",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "ZeroAmount",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "admin",
+      "outputs": [
+        {
+          "internalType": "address",
+          "name": "",
+          "type": "address"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "",
+          "type": "address"
+        }
+      ],
+      "name": "collateralToken",
+      "outputs": [
+        {
+          "internalType": "bool",
+          "name": "",
+          "type": "bool"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "Id",
+          "name": "_id",
+          "type": "bytes32"
+        }
+      ],
+      "name": "lltv",
+      "outputs": [
+        {
+          "internalType": "uint256",
+          "name": "",
+          "type": "uint256"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "_collateralToken",
+          "type": "address"
+        }
+      ],
+      "name": "setCollateralToken",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "Id",
+          "name": "_id",
+          "type": "bytes32"
+        },
+        {
+          "internalType": "uint256",
+          "name": "_lltv",
+          "type": "uint256"
+        }
+      ],
+      "name": "setLltv",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "Id",
+          "name": "_id",
+          "type": "bytes32"
+        },
+        {
+          "internalType": "uint256",
+          "name": "_swapFeeBps",
+          "type": "uint256"
+        }
+      ],
+      "name": "setSwapFee",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "Id",
+          "name": "_id",
+          "type": "bytes32"
+        },
+        {
+          "components": [
+            {
+              "internalType": "uint32",
+              "name": "timestamp",
+              "type": "uint32"
+            },
+            {
+              "internalType": "uint112",
+              "name": "feePerShare",
+              "type": "uint112"
+            },
+            {
+              "internalType": "int128",
+              "name": "flowDelta",
+              "type": "int128"
+            },
+            {
+              "internalType": "uint128",
+              "name": "totalBorrowAssets",
+              "type": "uint128"
+            },
+            {
+              "internalType": "uint128",
+              "name": "totalBorrowShares",
+              "type": "uint128"
+            },
+            {
+              "internalType": "uint112",
+              "name": "spareCapacity",
+              "type": "uint112"
+            },
+            {
+              "internalType": "uint112",
+              "name": "totalCollateral",
+              "type": "uint112"
+            },
+            {
+              "internalType": "uint112",
+              "name": "borrowCap",
+              "type": "uint112"
+            }
+          ],
+          "internalType": "struct Market",
+          "name": "",
+          "type": "tuple"
+        }
+      ],
+      "name": "swapFee",
+      "outputs": [
+        {
+          "internalType": "uint256",
+          "name": "",
+          "type": "uint256"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "Id",
+          "name": "",
+          "type": "bytes32"
+        }
+      ],
+      "name": "swapFeeBps",
+      "outputs": [
+        {
+          "internalType": "uint256",
+          "name": "",
+          "type": "uint256"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "_collateral",
+          "type": "address"
+        }
+      ],
+      "name": "validCollateral",
+      "outputs": [
+        {
+          "internalType": "bool",
+          "name": "",
+          "type": "bool"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    }
+  ],
+  "bytecode": "0x60a08060405234603657336080526102f6908161003b8239608051818181609401528181610142015281816101b601526102460152f35b5f80fdfe6080806040526004361015610012575f80fd5b5f3560e01c90816324f3ce77146102845750806343be5eaf14610235578063494b043b146101fd578063666181a91461018e5780637ff2b72f1461013157806399a55d66146100c7578063ae556e5914610107578063e7176885146100c75763f851a4401461007f575f80fd5b346100c3575f3660031901126100c3576040517f00000000000000000000000000000000000000000000000000000000000000006001600160a01b03168152602090f35b5f80fd5b346100c35760203660031901126100c3576004356001600160a01b038116908190036100c3575f525f602052602060ff60405f2054166040519015158152f35b346100c35760203660031901126100c3576004355f526002602052602060405f2054604051908152f35b346100c35761013f366102aa565b907f00000000000000000000000000000000000000000000000000000000000000006001600160a01b03163303610180575f52600160205260405f20555f80f35b6282b42960e81b5f5260045ffd5b346100c35760203660031901126100c3576004356001600160a01b038116908190036100c3577f00000000000000000000000000000000000000000000000000000000000000006001600160a01b03163303610180575f525f60205260405f20600160ff198254161790555f80f35b346100c3576101203660031901126100c3576101003660231901126100c3576004355f526002602052602060405f2054604051908152f35b346100c357610243366102aa565b907f00000000000000000000000000000000000000000000000000000000000000006001600160a01b03163303610180575f52600260205260405f20555f80f35b346100c35760203660031901126100c3576020906004355f526001825260405f20548152f35b60409060031901126100c357600435906024359056fea264697066735822122086fa56e7d2e61e10df787ce3f8f82c72c3585c9a5ecb0f562c37332df8f9413264736f6c634300081e0033",
+  "deployedBytecode": "0x6080806040526004361015610012575f80fd5b5f3560e01c90816324f3ce77146102845750806343be5eaf14610235578063494b043b146101fd578063666181a91461018e5780637ff2b72f1461013157806399a55d66146100c7578063ae556e5914610107578063e7176885146100c75763f851a4401461007f575f80fd5b346100c3575f3660031901126100c3576040517f00000000000000000000000000000000000000000000000000000000000000006001600160a01b03168152602090f35b5f80fd5b346100c35760203660031901126100c3576004356001600160a01b038116908190036100c3575f525f602052602060ff60405f2054166040519015158152f35b346100c35760203660031901126100c3576004355f526002602052602060405f2054604051908152f35b346100c35761013f366102aa565b907f00000000000000000000000000000000000000000000000000000000000000006001600160a01b03163303610180575f52600160205260405f20555f80f35b6282b42960e81b5f5260045ffd5b346100c35760203660031901126100c3576004356001600160a01b038116908190036100c3577f00000000000000000000000000000000000000000000000000000000000000006001600160a01b03163303610180575f525f60205260405f20600160ff198254161790555f80f35b346100c3576101203660031901126100c3576101003660231901126100c3576004355f526002602052602060405f2054604051908152f35b346100c357610243366102aa565b907f00000000000000000000000000000000000000000000000000000000000000006001600160a01b03163303610180575f52600260205260405f20555f80f35b346100c35760203660031901126100c3576020906004355f526001825260405f20548152f35b60409060031901126100c357600435906024359056fea264697066735822122086fa56e7d2e61e10df787ce3f8f82c72c3585c9a5ecb0f562c37332df8f9413264736f6c634300081e0033",
+  "linkReferences": {},
+  "deployedLinkReferences": {}
+}

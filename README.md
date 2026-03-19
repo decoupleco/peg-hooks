@@ -39,6 +39,17 @@ forge install
 forge test
 ```
 
+### Running Peg Mainnet Fork Tests
+
+The Peg integration includes an opt-in mainnet fork test suite in [test/PegMainnetFork.t.sol](test/PegMainnetFork.t.sol). To run only that suite, set a mainnet RPC URL and execute the matching contract test:
+
+```bash
+export MAINNET_RPC_URL=https://ethereum-rpc.publicnode.com
+forge test --match-contract PegMainnetForkTest
+```
+
+The current fork fixture uses Ethereum mainnet block `24688680`.
+
 ### Local Development
 
 Other than writing unit tests (recommended!), you can only deploy & test hooks on [anvil](https://book.getfoundry.sh/anvil/) locally. Scripts are available in the `script/` directory, which can be used to deploy hooks, create pools, provide liquidity and swap tokens. The scripts support both local `anvil` environment as well as running them directly on a production network.

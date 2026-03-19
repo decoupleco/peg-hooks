@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.26;
+pragma solidity ^0.8.30;
 
 import {Script} from "forge-std/Script.sol";
 import {IERC20} from "forge-std/interfaces/IERC20.sol";
