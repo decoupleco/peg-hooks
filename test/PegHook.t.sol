@@ -61,8 +61,8 @@ contract PegHookTest is BaseTest {
     PegHook hook;
     MockPegCore mockCore;
 
-    uint48 constant JPY_MARKET_ID = 1;
-    uint48 constant USD_MARKET_ID = 2;
+    uint128 constant JPY_MARKET_ID = 1;
+    uint128 constant USD_MARKET_ID = 2;
 
     // sUSDS-denominated prices (WAD)
     uint256 constant JPY_PRICE = 0.0076e18; // sUSDS per pegJPY
@@ -120,7 +120,7 @@ contract PegHookTest is BaseTest {
 
         // Register channel — we need the pegAsset (currency0 or currency1)
         // to match CREATE2. For testing, we'll etch the hook to skip CREATE2
-        // validation by directly writing ChannelState.
+        // validation by directly writing Channel storage.
         _registerMockChannel();
 
         // Provide full-range liquidity
@@ -134,31 +134,23 @@ contract PegHookTest is BaseTest {
         //
         // We treat currency0 as the pegAsset (pegIsToken0 = true).
         uint256 oracleRate = (JPY_PRICE * 1e18) / USD_PRICE;
-        PegHook.ChannelState memory state = PegHook.ChannelState({
-            emaPrice: uint128(oracleRate),
-            marketId: JPY_MARKET_ID,
-            lastUpdate: uint48(block.timestamp),
-            pegIsToken0: true
+
+        // Pack pegIsToken0 into MSB of marketId
+        uint128 PEG_IS_TOKEN0_BIT = 1 << 127;
+        PegHook.Channel memory ch = PegHook.Channel({
+            emaPrice: uint96(oracleRate),
+            timestamp: uint32(block.timestamp),
+            marketId: JPY_MARKET_ID | PEG_IS_TOKEN0_BIT
         });
 
-        // Write channel state via stdstore
-        // channels mapping: slot = keccak256(abi.encode(poolId, mappingSlot))
-        // Struct occupies 1 slot (packed).
-        // For simplicity, let's use a helper approach:
-        // We'll test with a harness that exposes _setChannel.
-
-        // Actually, let's just compute and set storage directly.
-        // mapping(PoolId => ChannelState) is at slot 0 in PegHook's storage
-        // (after BaseHook's poolManager immutable — immutables don't use slots).
-        // channels is the first (and only) storage variable.
-
+        // mapping(PoolId => Channel) is at slot 0 (immutables don't use slots).
+        // Slot 1 is after _PEG_IS_TOKEN0_BIT constant (private, no slot).
+        // channels is the first storage variable.
         bytes32 slot = keccak256(abi.encode(PoolId.unwrap(poolId), uint256(0)));
-        // Pack ChannelState into 256 bits:
-        // emaPrice (128) | marketId (48) | lastUpdate (48) | pegIsToken0 (8) | spare (24)
-        uint256 packed = uint256(state.emaPrice)
-            | (uint256(state.marketId) << 128)
-            | (uint256(state.lastUpdate) << 176)
-            | (uint256(state.pegIsToken0 ? 1 : 0) << 224);
+        // Pack Channel into 256 bits: emaPrice (96) | timestamp (32) | marketId (128)
+        uint256 packed = uint256(ch.emaPrice)
+            | (uint256(ch.timestamp) << 96)
+            | (uint256(ch.marketId) << 128);
 
         vm.store(address(hook), slot, bytes32(packed));
     }
@@ -241,7 +233,7 @@ contract PegHookTest is BaseTest {
 
     function testSwapUpdatesFeeAndEma() public {
         // Record EMA before swap
-        (uint128 emaBefore,,, ) = hook.channels(poolId);
+        (uint96 emaBefore,, ) = hook.channels(poolId);
         assertTrue(emaBefore > 0, "EMA should be initialized");
 
         // Perform a swap: sell token0 (pegAsset) for token1
@@ -257,7 +249,7 @@ contract PegHookTest is BaseTest {
         });
 
         // EMA should have updated
-        (uint128 emaAfter,,, ) = hook.channels(poolId);
+        (uint96 emaAfter,, ) = hook.channels(poolId);
         // After a swap, EMA should shift based on volume
         // (won't be exactly the same as before unless volume was 0)
         assertTrue(emaAfter > 0, "EMA should still be non-zero");
@@ -285,7 +277,7 @@ contract PegHookTest is BaseTest {
     }
 
     function testMultipleSwapsConvergeEma() public {
-        (uint128 ema0,,, ) = hook.channels(poolId);
+        (uint96 ema0,, ) = hook.channels(poolId);
 
         // Do several small swaps to see EMA converge
         for (uint256 i = 0; i < 5; i++) {
@@ -300,7 +292,7 @@ contract PegHookTest is BaseTest {
             });
         }
 
-        (uint128 ema5,,, ) = hook.channels(poolId);
+        (uint96 ema5,, ) = hook.channels(poolId);
 
         // After 5 sell swaps, the EMA should have moved from initial value
         // (pool price drops from selling token0, so EMA should track downward)
