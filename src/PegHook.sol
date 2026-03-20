@@ -13,7 +13,7 @@ import {LPFeeLibrary} from "v4-core/src/libraries/LPFeeLibrary.sol";
 import {StateLibrary} from "v4-core/src/libraries/StateLibrary.sol";
 import {Currency} from "v4-core/src/types/Currency.sol";
 
-import {IPegCore} from "./interfaces/IPegCore.sol";
+import {IPegCore, Id} from "./interfaces/IPegCore.sol";
 import {PegMath} from "./libraries/PegMath.sol";
 
 interface IPegAsset {
@@ -74,24 +74,23 @@ contract PegHook is BaseHook {
 
     /// @notice Hub numeraire market (e.g. USD).  Used to compute cross-rates:
     ///         oracle = core.marketPrice(mktId) / core.marketPrice(USD_MARKET_ID)
-    uint256 public immutable USD_MARKET_ID;
+    Id public immutable USD_MARKET_ID;
 
     // ═══════════════════════════════════════════════════════════════════════
     //  Storage — 1 slot per channel pool
     // ═══════════════════════════════════════════════════════════════════════
 
     /// @dev Packed into a single 256-bit slot (96 + 32 + 128 = 256):
-    ///        emaPrice   (uint96)   — VW-EMA price, WAD-scaled
-    ///        timestamp  (uint32)   — block.timestamp of last EMA touch
-    ///        marketId   (uint128)  — PegCore market id; MSB = pegIsToken0 flag
+    ///        emaPrice    (uint96)  — VW-EMA price, WAD-scaled
+    ///        timestamp   (uint32)  — block.timestamp of last EMA touch
+    ///        pegIsToken0 (bool)    — whether the PegAsset sorts as currency0
+    ///        marketId    (Id)      — PegCore market id
     struct Channel {
         uint96 emaPrice;
         uint32 timestamp;
-        uint128 marketId;
+        bool pegIsToken0;
+        Id marketId;
     }
-
-    /// @dev MSB of marketId encodes the pegIsToken0 layout flag.
-    uint128 private constant _PEG_IS_TOKEN0_BIT = 1 << 127;
 
     mapping(PoolId => Channel) public channels;
 
@@ -99,7 +98,7 @@ contract PegHook is BaseHook {
     //  Events
     // ═══════════════════════════════════════════════════════════════════════
 
-    event ChannelRegistered(PoolId indexed poolId, uint128 marketId, bool pegIsToken0);
+    event ChannelRegistered(PoolId indexed poolId, Id marketId, bool pegIsToken0);
     event EmaUpdated(PoolId indexed poolId, uint96 newEma, uint256 volume);
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -116,7 +115,7 @@ contract PegHook is BaseHook {
     //  Constructor
     // ═══════════════════════════════════════════════════════════════════════
 
-    constructor(IPoolManager _poolManager, IPegCore _core, bytes32 _pegAssetInitCodeHash, uint256 _usdMarketId)
+    constructor(IPoolManager _poolManager, IPegCore _core, bytes32 _pegAssetInitCodeHash, Id _usdMarketId)
         BaseHook(_poolManager)
     {
         core = _core;
@@ -157,7 +156,7 @@ contract PegHook is BaseHook {
     /// @param marketId    PegCore market id for oracle lookups.
     /// @param currencyId  CREATE2 salt used when PegCore deployed the PegAsset
     ///                    (e.g. keccak256("AUD")).
-    function registerChannel(PoolKey calldata key, uint128 marketId, bytes32 currencyId) external {
+    function registerChannel(PoolKey calldata key, Id marketId, bytes32 currencyId) external {
         PoolId poolId = key.toId();
         if (channels[poolId].emaPrice != 0) revert ChannelAlreadyRegistered();
 
@@ -176,7 +175,8 @@ contract PegHook is BaseHook {
         channels[poolId] = Channel({
             emaPrice: uint96(oracleRate),
             timestamp: uint32(block.timestamp),
-            marketId: marketId | (isPeg0 ? _PEG_IS_TOKEN0_BIT : uint128(0))
+            pegIsToken0: isPeg0,
+            marketId: marketId
         });
 
         emit ChannelRegistered(poolId, marketId, isPeg0);
@@ -236,11 +236,10 @@ contract PegHook is BaseHook {
         Channel storage ch = channels[poolId];
         if (ch.emaPrice == 0) revert ChannelNotRegistered();
 
-        // Unpack layout flag from marketId MSB
-        bool pegIsToken0 = (ch.marketId & _PEG_IS_TOKEN0_BIT) != 0;
+        bool pegIsToken0 = ch.pegIsToken0;
 
         // Three price sources → median → deviation → fee
-        uint256 oracleRate = _oracle(ch.marketId & ~_PEG_IS_TOKEN0_BIT);
+        uint256 oracleRate = _oracle(ch.marketId);
         uint256 poolRate;
         {
             (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolId);
@@ -279,8 +278,7 @@ contract PegHook is BaseHook {
         // Skip EMA update for unregistered pools (should not happen, but safe)
         if (ch.emaPrice == 0) return (this.afterSwap.selector, 0);
 
-        // Unpack layout flag from marketId MSB
-        bool pegIsToken0 = (ch.marketId & _PEG_IS_TOKEN0_BIT) != 0;
+        bool pegIsToken0 = ch.pegIsToken0;
 
         // Swap volume = absolute pegAsset delta
         int128 pegDelta = pegIsToken0 ? delta.amount0() : delta.amount1();
@@ -306,12 +304,12 @@ contract PegHook is BaseHook {
 
     function oracle(PoolId poolId) external view returns (uint256) {
         Channel storage ch = _channel(poolId);
-        return _oracle(_baseMarketId(ch));
+        return _oracle(ch.marketId);
     }
 
     function deviation(PoolId poolId) external view returns (int256) {
         Channel storage ch = _channel(poolId);
-        uint256 oracleRate = _oracle(_baseMarketId(ch));
+        uint256 oracleRate = _oracle(ch.marketId);
         uint256 robustRate = _robustPrice(poolId, ch);
         return int256(oracleRate) - int256(robustRate);
     }
@@ -330,30 +328,22 @@ contract PegHook is BaseHook {
         if (ch.emaPrice == 0) revert ChannelNotRegistered();
     }
 
-    function _baseMarketId(Channel storage ch) internal view returns (uint128) {
-        return ch.marketId & ~_PEG_IS_TOKEN0_BIT;
-    }
-
     function _robustPrice(PoolId poolId, Channel storage ch) internal view returns (uint256) {
-        uint256 oracleRate = _oracle(_baseMarketId(ch));
+        uint256 oracleRate = _oracle(ch.marketId);
         uint256 poolRate = _poolRate(poolId, ch);
         return PegMath.median(oracleRate, poolRate, uint256(ch.emaPrice));
     }
 
     function _poolRate(PoolId poolId, Channel storage ch) internal view returns (uint256) {
         (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolId);
-        return PegMath.sqrtPriceToWad(sqrtPriceX96, !_pegIsToken0(ch));
-    }
-
-    function _pegIsToken0(Channel storage ch) internal view returns (bool) {
-        return (ch.marketId & _PEG_IS_TOKEN0_BIT) != 0;
+        return PegMath.sqrtPriceToWad(sqrtPriceX96, !ch.pegIsToken0);
     }
 
     /// @dev  oracle = core.marketPrice(mktId) / core.marketPrice(USD_MARKET_ID)
     ///       Both prices are WAD-scaled sUSDS prices.  Division cancels sUSDS
     ///       numeraire → pure FX cross-rate (WAD-scaled, e.g. 0.0067e18 for JPY/USD).
-    function _oracle(uint128 marketId) internal view returns (uint256) {
-        uint256 mktPrice = core.marketPrice(uint256(marketId));
+    function _oracle(Id marketId) internal view returns (uint256) {
+        uint256 mktPrice = core.marketPrice(marketId);
         uint256 usdPrice = core.marketPrice(USD_MARKET_ID);
         // mktPrice / usdPrice, WAD-scaled
         return (mktPrice * 1e18) / usdPrice;

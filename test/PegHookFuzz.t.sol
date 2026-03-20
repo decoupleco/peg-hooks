@@ -19,19 +19,23 @@ import {EasyPosm} from "./utils/libraries/EasyPosm.sol";
 import {BaseTest} from "./utils/BaseTest.sol";
 
 import {PegHook} from "../src/PegHook.sol";
-import {IPegCore} from "../src/interfaces/IPegCore.sol";
+import {IPegCore, Id, MarketParams} from "../src/interfaces/IPegCore.sol";
 import {PegMath} from "../src/libraries/PegMath.sol";
 
 contract FuzzMockPegCore is IPegCore {
-    mapping(uint256 => uint256) public prices;
+    mapping(bytes32 => uint256) public prices;
 
-    function setMarketPrice(uint256 marketId, uint256 price) external {
-        prices[marketId] = price;
+    function setMarketPrice(Id marketId, uint256 price) external {
+        prices[Id.unwrap(marketId)] = price;
     }
 
-    function marketPrice(uint256 marketId) external view override returns (uint256) {
-        return prices[marketId];
+    function marketPrice(Id marketId) external view override returns (uint256) {
+        return prices[Id.unwrap(marketId)];
     }
+
+    function createMarket(MarketParams calldata) external pure override {}
+
+    function setBorrowCap(Id, uint112) external pure override {}
 }
 
 contract FuzzMockPegAsset is MockERC20 {
@@ -46,13 +50,12 @@ contract PegHookFuzzTest is BaseTest {
     using EasyPosm for IPositionManager;
     using PoolIdLibrary for PoolKey;
 
-    uint128 internal constant JPY_MARKET_ID = 1;
-    uint128 internal constant USD_MARKET_ID = 2;
+    Id internal constant JPY_MARKET_ID = Id.wrap(bytes32(uint256(1)));
+    Id internal constant USD_MARKET_ID = Id.wrap(bytes32(uint256(2)));
     int24 internal constant CHANNEL_TICK_LOWER = -60;
     int24 internal constant CHANNEL_TICK_UPPER = 60;
     bytes32 internal constant MOCK_INIT_CODE_HASH = keccak256("MOCK_PEGASSET");
     bytes32 internal constant JPY_CURRENCY_ID = keccak256("JPY");
-    uint128 internal constant PEG_IS_TOKEN0_BIT = 1 << 127;
     uint256 internal constant JPY_PRICE = 0.0076e18;
     uint256 internal constant USD_PRICE = 1.14e18;
 
@@ -79,7 +82,7 @@ contract PegHookFuzzTest is BaseTest {
         address hookAddress = address(flags ^ (0x5555 << 144));
 
         bytes memory constructorArgs =
-            abi.encode(poolManager, address(mockCore), MOCK_INIT_CODE_HASH, uint256(USD_MARKET_ID));
+            abi.encode(poolManager, address(mockCore), MOCK_INIT_CODE_HASH, USD_MARKET_ID);
         deployCodeTo("PegHook.sol:PegHook", constructorArgs, hookAddress);
         hook = PegHook(hookAddress);
 
@@ -170,7 +173,8 @@ contract PegHookFuzzTest is BaseTest {
         _setOracleCrossRate(oracleRate);
         _setChannelEma(uint96(emaPrice));
 
-        uint256 expectedOracle = (mockCore.prices(JPY_MARKET_ID) * 1e18) / mockCore.prices(USD_MARKET_ID);
+        uint256 expectedOracle =
+            (mockCore.prices(Id.unwrap(JPY_MARKET_ID)) * 1e18) / mockCore.prices(Id.unwrap(USD_MARKET_ID));
         uint256 expectedRobust = PegMath.median(expectedOracle, 1e18, emaPrice);
         int256 expectedDeviation = int256(expectedOracle) - int256(expectedRobust);
 
@@ -270,8 +274,8 @@ contract PegHookFuzzTest is BaseTest {
     }
 
     function _pegIsToken0() internal view returns (bool) {
-        (,, uint128 packedMarketId) = hook.channels(poolId);
-        return (packedMarketId & PEG_IS_TOKEN0_BIT) != 0;
+        (,, bool pegIsToken0,) = hook.channels(poolId);
+        return pegIsToken0;
     }
 
     function _beforeSwapFee(bool zeroForOne) internal returns (uint24 feeWithFlag) {
@@ -290,9 +294,10 @@ contract PegHookFuzzTest is BaseTest {
     }
 
     function _setChannelEma(uint96 emaPrice) internal {
-        (, uint32 timestamp, uint128 marketId) = hook.channels(poolId);
-        uint256 packed = uint256(emaPrice) | (uint256(timestamp) << 96) | (uint256(marketId) << 128);
+        (, uint32 timestamp, bool pegIsToken0, Id marketId) = hook.channels(poolId);
+        uint256 packed = uint256(emaPrice) | (uint256(timestamp) << 96) | ((pegIsToken0 ? 1 : 0) << 128);
         bytes32 slot = keccak256(abi.encode(PoolId.unwrap(poolId), uint256(0)));
         vm.store(address(hook), slot, bytes32(packed));
+        vm.store(address(hook), bytes32(uint256(slot) + 1), Id.unwrap(marketId));
     }
 }

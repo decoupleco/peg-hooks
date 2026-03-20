@@ -20,16 +20,20 @@ import {BaseTest} from "./utils/BaseTest.sol";
 
 import {MarketManager} from "../src/MarketManager.sol";
 import {LaunchPool} from "../src/LaunchPool.sol";
-import {IMarketManagerCore, Id, MarketParams} from "../src/interfaces/IMarketManagerCore.sol";
+import {IPegCore, Id, MarketParams} from "../src/interfaces/IPegCore.sol";
 import {IPegAssetFactory} from "../src/interfaces/IPegAssetFactory.sol";
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Mock: PegCore (no access control — records calls only)
 // ═══════════════════════════════════════════════════════════════════════════
 
-contract MockMMCore is IMarketManagerCore {
+contract MockMMCore is IPegCore {
     mapping(bytes32 => bool) public created;
     mapping(bytes32 => uint112) public borrowCaps;
+
+    function marketPrice(Id) external pure returns (uint256) {
+        return 1e18;
+    }
 
     function createMarket(MarketParams calldata p) external {
         bytes32 id = keccak256(abi.encode(p.collateralToken, p.loanToken, p.oracle, p.model));
@@ -162,7 +166,7 @@ contract MarketManagerTest is BaseTest {
 
         // Deploy MarketManager — address(this) is the owner.
         mm = new MarketManager(
-            IMarketManagerCore(address(mockCore)),
+            IPegCore(address(mockCore)),
             IPegAssetFactory(address(mockFactory)),
             poolManager,
             positionManager,

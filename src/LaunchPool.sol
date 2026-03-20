@@ -60,10 +60,10 @@ contract LaunchPool is IERC721Receiver {
     // ═══════════════════════════════════════════════════════════════════════
 
     enum Stage {
-        Seeding,           // deposits open — deadline not yet reached
+        Seeding, // deposits open — deadline not yet reached
         PendingActivation, // deadline passed, target met, awaiting activate()
-        Failed,            // deadline passed, target not met — withdrawals open
-        Active             // activated — redeem available
+        Failed, // deadline passed, target not met — withdrawals open
+        Active // activated — redeem available
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -243,11 +243,7 @@ contract LaunchPool is IERC721Receiver {
     /// @param assets   Anchor amount to deposit (must be pre-approved by caller).
     /// @param receiver Account whose `deposits[]` balance is credited.
     /// @return shares  Always equals `assets` (1:1 accounting).
-    function deposit(uint256 assets, address receiver)
-        external
-        onlyStage(Stage.Seeding)
-        returns (uint256 shares)
-    {
+    function deposit(uint256 assets, address receiver) external onlyStage(Stage.Seeding) returns (uint256 shares) {
         if (assets == 0) revert ZeroAmount();
         anchor.safeTransferFrom(msg.sender, address(this), assets);
         deposits[receiver] += assets;
@@ -292,12 +288,7 @@ contract LaunchPool is IERC721Receiver {
     /// @param _tickLower     Lower tick of the concentrated LP range.
     /// @param _tickUpper     Upper tick of the concentrated LP range.
     /// @param _liquidity     Exact liquidity units to mint (computed offchain).
-    function activate(
-        PoolKey calldata key,
-        int24 _tickLower,
-        int24 _tickUpper,
-        uint128 _liquidity
-    ) external onlyOwner {
+    function activate(PoolKey calldata key, int24 _tickLower, int24 _tickUpper, uint128 _liquidity) external onlyOwner {
         // Allow activation from Seeding (early) or PendingActivation (post-deadline).
         Stage s = stage();
         if (s != Stage.Seeding && s != Stage.PendingActivation) {
@@ -333,19 +324,13 @@ contract LaunchPool is IERC721Receiver {
         uint256 depositAmount = totalDeposits;
         anchor.forceApprove(address(permit2), depositAmount);
         permit2.approve(
-            address(anchor),
-            address(positionManager),
-            uint160(depositAmount),
-            uint48(block.timestamp + 3600)
+            address(anchor), address(positionManager), uint160(depositAmount), uint48(block.timestamp + 3600)
         );
 
         // ── Step 3: mint single-sided concentrated LP ────────────────────
         // MINT_POSITION + SETTLE_PAIR + SWEEP (c0 dust to this) + SWEEP (c1 dust to this)
         bytes memory actions = abi.encodePacked(
-            uint8(Actions.MINT_POSITION),
-            uint8(Actions.SETTLE_PAIR),
-            uint8(Actions.SWEEP),
-            uint8(Actions.SWEEP)
+            uint8(Actions.MINT_POSITION), uint8(Actions.SETTLE_PAIR), uint8(Actions.SWEEP), uint8(Actions.SWEEP)
         );
 
         bytes[] memory params = new bytes[](4);
@@ -361,20 +346,17 @@ contract LaunchPool is IERC721Receiver {
             _liquidity,
             amount0Max,
             amount1Max,
-            address(this),    // recipient of the NFT
-            bytes("")         // hookData
+            address(this), // recipient of the NFT
+            bytes("") // hookData
         );
-        params[1] = abi.encode(key.currency0, key.currency1);  // SETTLE_PAIR
-        params[2] = abi.encode(key.currency0, address(this));  // SWEEP c0 dust
-        params[3] = abi.encode(key.currency1, address(this));  // SWEEP c1 dust
+        params[1] = abi.encode(key.currency0, key.currency1); // SETTLE_PAIR
+        params[2] = abi.encode(key.currency0, address(this)); // SWEEP c0 dust
+        params[3] = abi.encode(key.currency1, address(this)); // SWEEP c1 dust
 
         // Record the next NFT id before minting (PositionManager increments sequentially).
         uint256 tokenId = positionManager.nextTokenId();
 
-        positionManager.modifyLiquidities(
-            abi.encode(actions, params),
-            block.timestamp + 3600
-        );
+        positionManager.modifyLiquidities(abi.encode(actions, params), block.timestamp + 3600);
 
         // ── Step 4: verify and record state ─────────────────────────────
         // Read actual minted liquidity from the position — guards against tick
@@ -382,9 +364,9 @@ contract LaunchPool is IERC721Receiver {
         uint128 actualLiquidity = positionManager.getPositionLiquidity(tokenId);
         if (actualLiquidity == 0) revert LiquidityMintFailed();
 
-        lpTokenId   = tokenId;
+        lpTokenId = tokenId;
         lpLiquidity = actualLiquidity;
-        activated   = true;
+        activated = true;
 
         emit Activated(key.toId(), tokenId, actualLiquidity);
     }
@@ -412,25 +394,19 @@ contract LaunchPool is IERC721Receiver {
         deposits[msg.sender] = 0;
 
         // DECREASE_LIQUIDITY + TAKE_PAIR: delivers tokens directly to msg.sender.
-        bytes memory actions = abi.encodePacked(
-            uint8(Actions.DECREASE_LIQUIDITY),
-            uint8(Actions.TAKE_PAIR)
-        );
+        bytes memory actions = abi.encodePacked(uint8(Actions.DECREASE_LIQUIDITY), uint8(Actions.TAKE_PAIR));
 
         bytes[] memory params = new bytes[](2);
         params[0] = abi.encode(
             lpTokenId,
             userLiquidity,
-            uint128(0),   // amount0Min — no slippage guard (hackathon)
-            uint128(0),   // amount1Min
-            bytes("")     // hookData
+            uint128(0), // amount0Min — no slippage guard (hackathon)
+            uint128(0), // amount1Min
+            bytes("") // hookData
         );
         params[1] = abi.encode(poolKey.currency0, poolKey.currency1, msg.sender);
 
-        positionManager.modifyLiquidities(
-            abi.encode(actions, params),
-            block.timestamp + 3600
-        );
+        positionManager.modifyLiquidities(abi.encode(actions, params), block.timestamp + 3600);
 
         emit Redeemed(msg.sender, userLiquidity);
     }
@@ -439,12 +415,7 @@ contract LaunchPool is IERC721Receiver {
     //  ERC-721 receiver — accept PositionManager NFT
     // ═══════════════════════════════════════════════════════════════════════
 
-    function onERC721Received(address, address, uint256, bytes calldata)
-        external
-        pure
-        override
-        returns (bytes4)
-    {
+    function onERC721Received(address, address, uint256, bytes calldata) external pure override returns (bytes4) {
         return IERC721Receiver.onERC721Received.selector;
     }
 }

@@ -23,7 +23,7 @@ import {EasyPosm} from "./utils/libraries/EasyPosm.sol";
 import {BaseTest} from "./utils/BaseTest.sol";
 
 import {PegHook} from "../src/PegHook.sol";
-import {IPegCore} from "../src/interfaces/IPegCore.sol";
+import {IPegCore, Id, MarketParams} from "../src/interfaces/IPegCore.sol";
 import {PegMath} from "../src/libraries/PegMath.sol";
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -31,15 +31,19 @@ import {PegMath} from "../src/libraries/PegMath.sol";
 // ═══════════════════════════════════════════════════════════════════════════════
 
 contract MockPegCore is IPegCore {
-    mapping(uint256 => uint256) public prices;
+    mapping(bytes32 => uint256) public prices;
 
-    function setMarketPrice(uint256 marketId, uint256 price) external {
-        prices[marketId] = price;
+    function setMarketPrice(Id marketId, uint256 price) external {
+        prices[Id.unwrap(marketId)] = price;
     }
 
-    function marketPrice(uint256 marketId) external view override returns (uint256) {
-        return prices[marketId];
+    function marketPrice(Id marketId) external view override returns (uint256) {
+        return prices[Id.unwrap(marketId)];
     }
+
+    function createMarket(MarketParams calldata) external pure override {}
+
+    function setBorrowCap(Id, uint112) external pure override {}
 }
 
 contract MockPegAsset is MockERC20 {
@@ -71,8 +75,8 @@ contract PegHookTest is BaseTest {
     PegHook hook;
     MockPegCore mockCore;
 
-    uint128 constant JPY_MARKET_ID = 1;
-    uint128 constant USD_MARKET_ID = 2;
+    Id constant JPY_MARKET_ID = Id.wrap(bytes32(uint256(1)));
+    Id constant USD_MARKET_ID = Id.wrap(bytes32(uint256(2)));
     int24 constant CHANNEL_TICK_LOWER = -60;
     int24 constant CHANNEL_TICK_UPPER = 60;
 
@@ -86,8 +90,6 @@ contract PegHookTest is BaseTest {
     bytes32 constant MOCK_INIT_CODE_HASH = keccak256("MOCK_PEGASSET");
     bytes32 constant JPY_CURRENCY_ID = keccak256("JPY");
     bytes32 constant AUD_CURRENCY_ID = keccak256("AUD");
-    uint128 constant PEG_IS_TOKEN0_BIT = 1 << 127;
-
     // ─── Setup ───────────────────────────────────────────────────────────
 
     function setUp() public {
@@ -111,7 +113,7 @@ contract PegHookTest is BaseTest {
         address hookAddress = address(flags ^ (0x4444 << 144));
 
         bytes memory constructorArgs =
-            abi.encode(poolManager, address(mockCore), MOCK_INIT_CODE_HASH, uint256(USD_MARKET_ID));
+            abi.encode(poolManager, address(mockCore), MOCK_INIT_CODE_HASH, USD_MARKET_ID);
         deployCodeTo("PegHook.sol:PegHook", constructorArgs, hookAddress);
         hook = PegHook(hookAddress);
         vm.label(hookAddress, "PegHook");
@@ -222,8 +224,8 @@ contract PegHookTest is BaseTest {
     }
 
     function _pegIsToken0() internal view returns (bool) {
-        (,, uint128 packedMarketId) = hook.channels(poolId);
-        return (packedMarketId & PEG_IS_TOKEN0_BIT) != 0;
+        (,, bool pegIsToken0,) = hook.channels(poolId);
+        return pegIsToken0;
     }
 
     function _beforeSwapFee(bool zeroForOne) internal returns (uint24 feeWithFlag) {
@@ -401,7 +403,7 @@ contract PegHookTest is BaseTest {
 
     function testSwapUpdatesFeeAndEma() public {
         // Record EMA before swap
-        (uint96 emaBefore,,) = hook.channels(poolId);
+        (uint96 emaBefore,,,) = hook.channels(poolId);
         assertTrue(emaBefore > 0, "EMA should be initialized");
 
         // Perform a swap: sell pegAsset for anchor
@@ -417,7 +419,7 @@ contract PegHookTest is BaseTest {
         });
 
         // EMA should have updated
-        (uint96 emaAfter,,) = hook.channels(poolId);
+        (uint96 emaAfter,,,) = hook.channels(poolId);
         // After a swap, EMA should shift based on volume
         // (won't be exactly the same as before unless volume was 0)
         assertTrue(emaAfter > 0, "EMA should still be non-zero");
@@ -445,7 +447,7 @@ contract PegHookTest is BaseTest {
     }
 
     function testMultipleSwapsConvergeEma() public {
-        (uint96 ema0,,) = hook.channels(poolId);
+        (uint96 ema0,,,) = hook.channels(poolId);
 
         // Do several small peg sells to see EMA converge
         for (uint256 i = 0; i < 5; i++) {
@@ -460,7 +462,7 @@ contract PegHookTest is BaseTest {
             });
         }
 
-        (uint96 ema5,,) = hook.channels(poolId);
+        (uint96 ema5,,,) = hook.channels(poolId);
 
         // After 5 sell swaps, the EMA should have moved from initial value
         // (pool price drops from selling token0, so EMA should track downward)

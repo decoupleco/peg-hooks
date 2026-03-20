@@ -15,7 +15,7 @@ import {LiquidityAmounts} from "v4-periphery/src/libraries/LiquidityAmounts.sol"
 
 import {IPermit2} from "permit2/src/interfaces/IPermit2.sol";
 
-import {IMarketManagerCore, Id, MarketParams} from "./interfaces/IMarketManagerCore.sol";
+import {IPegCore, Id, MarketParams} from "./interfaces/IPegCore.sol";
 import {IPegAssetFactory} from "./interfaces/IPegAssetFactory.sol";
 import {LaunchPool} from "./LaunchPool.sol";
 
@@ -59,7 +59,7 @@ contract MarketManager {
     // ═══════════════════════════════════════════════════════════════════════
 
     /// @notice PegCore singleton — market creation and cap management.
-    IMarketManagerCore public immutable core;
+    IPegCore public immutable core;
 
     /// @notice PegAsset factory — deploys synthetic ERC-20 token contracts.
     IPegAssetFactory public immutable factory;
@@ -88,20 +88,20 @@ contract MarketManager {
     ///           anchor = currency1 → tickUpper ≤ 0 (single-sided token1 range)
     ///           anchor = currency0 → tickLower ≥ 0 (single-sided token0 range)
     struct MarketConfig {
-        IERC20  anchor;           // Deposit token for LaunchPool (e.g. USDC, sUSDS)
-        uint256 launchTarget;     // Minimum total deposits in anchor units
-        uint40  launchDuration;   // Seeding window length in seconds
-        int24   tickLower;        // Concentrated LP range — lower tick bound
-        int24   tickUpper;        //                         upper tick bound
+        IERC20 anchor; // Deposit token for LaunchPool (e.g. USDC, sUSDS)
+        uint256 launchTarget; // Minimum total deposits in anchor units
+        uint40 launchDuration; // Seeding window length in seconds
+        int24 tickLower; // Concentrated LP range — lower tick bound
+        int24 tickUpper; //                         upper tick bound
         uint112 initialBorrowCap; // PegCore borrowCap applied at graduation
     }
 
     /// @notice On-chain registry entry per market.
     struct MarketRecord {
-        address      launchPool;  // LaunchPool address owned by this contract
-        address      pegAsset;    // Deployed PegAsset (loanToken in PegCore)
-        bool         active;      // true once activate() succeeds
-        MarketConfig config;      // Immutable parameters set at create()
+        address launchPool; // LaunchPool address owned by this contract
+        address pegAsset; // Deployed PegAsset (loanToken in PegCore)
+        bool active; // true once activate() succeeds
+        MarketConfig config; // Immutable parameters set at create()
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -119,11 +119,7 @@ contract MarketManager {
     // ═══════════════════════════════════════════════════════════════════════
 
     /// @notice Emitted when a market and its LaunchPool are created.
-    event MarketCreated(
-        Id      indexed marketId,
-        address indexed launchPool,
-        address indexed pegAsset
-    );
+    event MarketCreated(Id indexed marketId, address indexed launchPool, address indexed pegAsset);
 
     /// @notice Emitted when a market is graduated (pool live, borrowCap set).
     event MarketActivated(Id indexed marketId, PoolId indexed channelId);
@@ -146,20 +142,20 @@ contract MarketManager {
     // ═══════════════════════════════════════════════════════════════════════
 
     constructor(
-        IMarketManagerCore _core,
-        IPegAssetFactory   _factory,
-        IPoolManager       _poolManager,
-        IPositionManager   _positionManager,
-        IPermit2           _permit2,
-        address            _pegHook
+        IPegCore _core,
+        IPegAssetFactory _factory,
+        IPoolManager _poolManager,
+        IPositionManager _positionManager,
+        IPermit2 _permit2,
+        address _pegHook
     ) {
-        core            = _core;
-        factory         = _factory;
-        poolManager     = _poolManager;
+        core = _core;
+        factory = _factory;
+        poolManager = _poolManager;
         positionManager = _positionManager;
-        permit2         = _permit2;
-        pegHook         = _pegHook;
-        owner           = msg.sender;
+        permit2 = _permit2;
+        pegHook = _pegHook;
+        owner = msg.sender;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -201,9 +197,9 @@ contract MarketManager {
         // 2. Build final MarketParams, overwriting loanToken with the deployed PegAsset.
         MarketParams memory params = MarketParams({
             collateralToken: coreParams.collateralToken,
-            loanToken:       pegAsset,
-            oracle:          coreParams.oracle,
-            model:           coreParams.model
+            loanToken: pegAsset,
+            oracle: coreParams.oracle,
+            model: coreParams.model
         });
 
         // 3. Derive market Id.
@@ -215,22 +211,12 @@ contract MarketManager {
         // 5. Deploy LaunchPool — this contract acts as its owner.
         address launchPool = address(
             new LaunchPool(
-                config.anchor,
-                config.launchTarget,
-                config.launchDuration,
-                poolManager,
-                positionManager,
-                permit2
+                config.anchor, config.launchTarget, config.launchDuration, poolManager, positionManager, permit2
             )
         );
 
         // 6. Store registry record.
-        markets[marketId] = MarketRecord({
-            launchPool: launchPool,
-            pegAsset:   pegAsset,
-            active:     false,
-            config:     config
-        });
+        markets[marketId] = MarketRecord({launchPool: launchPool, pegAsset: pegAsset, active: false, config: config});
         marketIds.push(marketId);
 
         emit MarketCreated(marketId, launchPool, pegAsset);
@@ -265,28 +251,19 @@ contract MarketManager {
 
         // Sort pegAsset and anchor into currency0 < currency1 (UniV4 convention).
         address pegAssetAddr = rec.pegAsset;
-        address anchorAddr   = address(cfg.anchor);
-        bool anchorIsToken0  = anchorAddr < pegAssetAddr;
+        address anchorAddr = address(cfg.anchor);
+        bool anchorIsToken0 = anchorAddr < pegAssetAddr;
 
         PoolKey memory key = PoolKey({
-            currency0:   anchorIsToken0
-                             ? Currency.wrap(anchorAddr)
-                             : Currency.wrap(pegAssetAddr),
-            currency1:   anchorIsToken0
-                             ? Currency.wrap(pegAssetAddr)
-                             : Currency.wrap(anchorAddr),
-            fee:         DYNAMIC_FEE_FLAG,
+            currency0: anchorIsToken0 ? Currency.wrap(anchorAddr) : Currency.wrap(pegAssetAddr),
+            currency1: anchorIsToken0 ? Currency.wrap(pegAssetAddr) : Currency.wrap(anchorAddr),
+            fee: DYNAMIC_FEE_FLAG,
             tickSpacing: TICK_SPACING,
-            hooks:       IHooks(pegHook)
+            hooks: IHooks(pegHook)
         });
 
         // Compute single-sided liquidity from the full anchor deposit balance.
-        uint128 liquidity = _computeLiquidity(
-            lp.totalDeposits(),
-            cfg.tickLower,
-            cfg.tickUpper,
-            anchorIsToken0
-        );
+        uint128 liquidity = _computeLiquidity(lp.totalDeposits(), cfg.tickLower, cfg.tickUpper, anchorIsToken0);
 
         // Initialize the UniV4 pool + mint single-sided LP from all deposits.
         lp.activate(key, cfg.tickLower, cfg.tickUpper, liquidity);
@@ -340,12 +317,11 @@ contract MarketManager {
     /// @dev Compute liquidity for a single-sided concentrated position.
     ///      anchor = token0 → range above current price → getLiquidityForAmount0.
     ///      anchor = token1 → range below current price → getLiquidityForAmount1.
-    function _computeLiquidity(
-        uint256 amount,
-        int24   tickLower,
-        int24   tickUpper,
-        bool    anchorIsToken0
-    ) internal pure returns (uint128 liquidity) {
+    function _computeLiquidity(uint256 amount, int24 tickLower, int24 tickUpper, bool anchorIsToken0)
+        internal
+        pure
+        returns (uint128 liquidity)
+    {
         uint160 sqrtA = TickMath.getSqrtPriceAtTick(tickLower);
         uint160 sqrtB = TickMath.getSqrtPriceAtTick(tickUpper);
         liquidity = anchorIsToken0
@@ -355,8 +331,6 @@ contract MarketManager {
 
     /// @dev Derive PegCore market Id from MarketParams — mirrors PegCore's own derivation.
     function _marketId(MarketParams memory p) internal pure returns (Id) {
-        return Id.wrap(keccak256(abi.encode(
-            p.collateralToken, p.loanToken, p.oracle, p.model
-        )));
+        return Id.wrap(keccak256(abi.encode(p.collateralToken, p.loanToken, p.oracle, p.model)));
     }
 }

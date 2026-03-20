@@ -6,6 +6,8 @@ import {Id, MarketParams} from "./PegTypes.sol";
 interface IPegCore {
     function admin() external view returns (address);
 
+    function marketPrice(Id id) external view returns (uint256 price);
+
     function setModel(address model, bool approved) external;
 
     function setBorrowCap(Id id, uint112 cap) external;
